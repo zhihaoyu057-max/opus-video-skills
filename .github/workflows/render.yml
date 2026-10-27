@@ -1,0 +1,78 @@
+name: render-mv
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "sheet=只看图, video=出片"
+        type: choice
+        options: [sheet, video]
+        default: sheet
+      project:
+        description: "项目目录"
+        default: projects/mv
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: install chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-cjk
+
+      - name: scaffold project
+        run: |
+          if [ ! -d "${{ github.event.inputs.project }}" ]; then
+            bash skills/painted-animation/scripts/new_project.sh "${{ github.event.inputs.project }}" --keep-demo
+          fi
+
+      - name: copy assets
+        run: |
+          P="${{ github.event.inputs.project }}"
+          mkdir -p "$P/assets"
+          if [ -d assets ]; then cp -n assets/* "$P/assets/" || true; fi
+
+      - name: npm install
+        working-directory: ${{ github.event.inputs.project }}
+        run: npm install --no-audit --no-fund
+
+      - name: render sheet
+        if: github.event.inputs.mode == 'sheet'
+        working-directory: ${{ github.event.inputs.project }}
+        run: |
+          node render.mjs --sheet=0.5,2,4,6 --cols=4 --w=480 \
+            --out=out/check/a.jpg \
+            --chrome=${{ steps.chrome.outputs.chrome-path }}
+
+      - name: render video
+        if: github.event.inputs.mode == 'video'
+        working-directory: ${{ github.event.inputs.project }}
+        run: |
+          node render.mjs --frames --workers=4 \
+            --chrome=${{ steps.chrome.outputs.chrome-path }}
+          node render.mjs --encode --out=out/video.mp4 \
+            --audio=assets/song.mp3
+
+      - name: upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: mv-output
+          path: |
+            ${{ github.event.inputs.project }}/out/**/*.jpg
+            ${{ github.event.inputs.project }}/out/**/*.mp4
+          retention-days: 7
