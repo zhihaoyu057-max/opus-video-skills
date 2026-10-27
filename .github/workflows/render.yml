@@ -15,10 +15,13 @@ on:
 permissions:
   contents: read
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -26,41 +29,61 @@ jobs:
         with:
           node-version: 20
 
+      - name: diagnose
+        timeout-minutes: 3
+        run: |
+          echo "=== node ==="; node -v; npm -v
+          echo "=== skill dir ==="
+          ls -la skills/painted-animation
+          echo "=== template ==="
+          ls -la skills/painted-animation/template || true
+          echo "=== template package.json ==="
+          cat skills/painted-animation/template/package.json || true
+          echo "=== studio.html scripts ==="
+          grep -n "script src" skills/painted-animation/template/studio.html || true
+
       - name: install chrome
         id: chrome
+        timeout-minutes: 5
         uses: browser-actions/setup-chrome@v1
 
       - name: install ffmpeg
+        timeout-minutes: 6
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-noto-cjk
+          ffmpeg -version | head -1
 
-      - name: scaffold project
-        run: |
-          if [ ! -d "${{ github.event.inputs.project }}" ]; then
-            bash skills/painted-animation/scripts/new_project.sh "${{ github.event.inputs.project }}" --keep-demo
-          fi
-
-      - name: copy assets
+      - name: scaffold
+        timeout-minutes: 4
         run: |
           P="${{ github.event.inputs.project }}"
+          mkdir -p "$P"
+          cp -r skills/painted-animation/template/. "$P"/
           mkdir -p "$P/assets"
           if [ -d assets ]; then cp -n assets/* "$P/assets/" || true; fi
+          echo "=== project files ==="; ls -la "$P"
 
       - name: npm install
+        timeout-minutes: 8
         working-directory: ${{ github.event.inputs.project }}
-        run: npm install --no-audit --no-fund
+        run: |
+          npm install --no-audit --no-fund --registry=https://registry.npmjs.org
+          echo "=== node_modules ok ==="; ls -d node_modules || true
 
       - name: render sheet
         if: github.event.inputs.mode == 'sheet'
+        timeout-minutes: 8
         working-directory: ${{ github.event.inputs.project }}
         run: |
+          echo "chrome = ${{ steps.chrome.outputs.chrome-path }}"
           node render.mjs --sheet=0.5,2,4,6 --cols=4 --w=480 \
             --out=out/check/a.jpg \
             --chrome=${{ steps.chrome.outputs.chrome-path }}
 
       - name: render video
         if: github.event.inputs.mode == 'video'
+        timeout-minutes: 40
         working-directory: ${{ github.event.inputs.project }}
         run: |
           node render.mjs --frames --workers=4 \
@@ -69,6 +92,7 @@ jobs:
             --audio=assets/song.mp3
 
       - name: upload result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mv-output
@@ -76,3 +100,9 @@ jobs:
             ${{ github.event.inputs.project }}/out/**/*.jpg
             ${{ github.event.inputs.project }}/out/**/*.mp4
           retention-days: 7
+
+      - name: fail summary
+        if: failure()
+        run: |
+          echo "跑挂了。看上面第一个红 ✕ 步骤的日志。"
+          ls -la ${{ github.event.inputs.project }} || true
