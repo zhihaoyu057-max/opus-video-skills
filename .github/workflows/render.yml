@@ -7,7 +7,7 @@ on:
         description: "sheet=只看图, video=出片"
         type: choice
         options: [sheet, video]
-        default: sheet
+        default: video
       project:
         description: "项目目录"
         default: projects/mv
@@ -42,7 +42,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg fonts-noto-cjk
-          fc-list | grep -i "noto serif cjk" | head -3
 
       - name: scaffold
         timeout-minutes: 4
@@ -52,7 +51,7 @@ jobs:
           cp -r skills/painted-animation/template/. "$P"/
           mkdir -p "$P/assets"
           if [ -d assets ]; then cp -n assets/* "$P/assets/" || true; fi
-          echo "=== assets ==="; ls -la "$P/assets"
+          ls -la "$P" | head -20
 
       - name: npm install
         timeout-minutes: 8
@@ -70,15 +69,25 @@ jobs:
 
       - name: render video
         if: github.event.inputs.mode == 'video'
-        timeout-minutes: 50
+        timeout-minutes: 55
         working-directory: ${{ github.event.inputs.project }}
         run: |
-          AUDIO=$(ls assets/*.ogg assets/*.mp3 assets/*.m4a assets/*.wav 2>/dev/null | head -1)
+          AUDIO=$(ls assets/*.ogg assets/*.mp3 2>/dev/null | head -1)
           echo "audio = $AUDIO"
-          ffprobe -hide_banner "$AUDIO" 2>&1 | head -6
-          node render.mjs --frames --workers=4 --soft-gl \
-            --range=${{ github.event.inputs.range }} \
-            --chrome=${{ steps.chrome.outputs.chrome-path }}
+          CHROME="${{ steps.chrome.outputs.chrome-path }}"
+          ok=0
+          for w in 4 2 1; do
+            for try in 1 2 3; do
+              echo "--- workers=$w try=$try ---"
+              if node render.mjs --frames --workers=$w --soft-gl \
+                   --range=${{ github.event.inputs.range }} --chrome="$CHROME"; then
+                ok=1; break 2
+              fi
+              echo "failed, sleep 15s"
+              sleep 15
+            done
+          done
+          if [ "$ok" != "1" ]; then echo "frames 全部失败"; exit 1; fi
           node render.mjs --encode --out=out/video.mp4 --audio="$AUDIO"
 
       - name: upload result
