@@ -1,19 +1,7 @@
 name: render-mv
 
 on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "sheet=只看图, video=出片"
-        type: choice
-        options: [sheet, video]
-        default: video
-      project:
-        description: "项目目录"
-        default: projects/mv
-      range:
-        description: "只渲染这段时间，例 0:10"
-        default: "0:10"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -37,40 +25,71 @@ jobs:
         timeout-minutes: 5
         uses: browser-actions/setup-chrome@v1
 
-      - name: install ffmpeg
-        timeout-minutes: 6
+      - name: fonts
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-cjk
+          if ! fc-list :lang=zh | grep -q .; then
+            echo "installing CJK fonts"
+            sudo apt-get update -o Acquire::Retries=3 || true
+            sudo apt-get install -y fonts-noto-cjk || true
+          fi
+          fc-list :lang=zh | head -3
+          command -v ffmpeg && ffmpeg -version | head -1
 
       - name: scaffold
         timeout-minutes: 4
         run: |
-          P="${{ github.event.inputs.project }}"
+          P=projects/mv
           mkdir -p "$P"
           cp -r skills/painted-animation/template/. "$P"/
           mkdir -p "$P/assets"
-          if [ -d assets ]; then cp -n assets/* "$P/assets/" || true; fi
-          ls -la "$P" | head -20
+          cp -n assets/* "$P/assets/" 2>/dev/null || true
+          ls "$P/assets"
+          ls "$P/src"
+
+      - name: patch config and karaoke
+        timeout-minutes: 3
+        working-directory: projects/mv
+        run: |
+          python3 - <<'PY'
+          import re, io, sys
+
+          # 1) length: 44s, tempo ~66 BPM
+          p = 'src/config.js'
+          s = open(p, encoding='utf-8').read()
+          s = re.sub(r'duration:\s*\d+(\.\d+)?', 'duration: 44', s)
+          s = re.sub(r'bpm:\s*\d+(\.\d+)?', 'bpm: 66', s)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('config ->', s.strip().splitlines()[-1][:120])
+
+          # 2) lyrics with clip-relative times (clip starts at 0)
+          ly = """const LY = [
+            [22.23, 27.90, '天涯的尽头是风沙'],
+            [27.50, 32.84, '红尘的故事叫牵挂'],
+            [32.84, 38.46, '封刀隐没在寻常人家 东篱下'],
+            [38.46, 43.50, '闲云野鹤古刹'],
+          ];"""
+          k = 'src/karaoke.js'
+          t = open(k, encoding='utf-8').read()
+          t2 = re.sub(r'const LY = \[.*?\];', ly, t, count=1, flags=re.S)
+          if t2 == t:
+              print('ERROR: LY block not found'); sys.exit(1)
+          t2 = re.sub(r"const KFONT = .*?;",
+                      'const KFONT = "Noto Serif CJK SC", "Ma Shan Zheng", "Kaiti SC", serif;',
+                      t2, count=1)
+          open(k, 'w', encoding='utf-8').write(t2)
+          print('LYRICS PATCHED OK')
+          print(t2[:400])
+          PY
 
       - name: npm install
         timeout-minutes: 8
-        working-directory: ${{ github.event.inputs.project }}
+        working-directory: projects/mv
         run: npm install --no-audit --no-fund
 
-      - name: render sheet
-        if: github.event.inputs.mode == 'sheet'
-        timeout-minutes: 10
-        working-directory: ${{ github.event.inputs.project }}
-        run: |
-          node render.mjs --sheet=0.5,2,4,6 --cols=4 --w=480 --soft-gl \
-            --out=out/check/a.jpg \
-            --chrome=${{ steps.chrome.outputs.chrome-path }}
-
-      - name: render video
-        if: github.event.inputs.mode == 'video'
-        timeout-minutes: 55
-        working-directory: ${{ github.event.inputs.project }}
+      - name: render
+        timeout-minutes: 50
+        working-directory: projects/mv
         run: |
           AUDIO=$(ls assets/*.ogg assets/*.mp3 2>/dev/null | head -1)
           echo "audio = $AUDIO"
@@ -79,23 +98,20 @@ jobs:
           for w in 4 2 1; do
             for try in 1 2 3; do
               echo "--- workers=$w try=$try ---"
-              if node render.mjs --frames --workers=$w --soft-gl \
-                   --range=${{ github.event.inputs.range }} --chrome="$CHROME"; then
+              if node render.mjs --frames --workers=$w --soft-gl --range=0:43 --chrome="$CHROME"; then
                 ok=1; break 2
               fi
-              echo "failed, sleep 15s"
               sleep 15
             done
           done
-          if [ "$ok" != "1" ]; then echo "frames 全部失败"; exit 1; fi
+          test "$ok" = "1" || { echo "render failed"; exit 1; }
           node render.mjs --encode --out=out/video.mp4 --audio="$AUDIO"
+          ls -lh out
 
-      - name: upload result
+      - name: upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mv-output
-          path: |
-            ${{ github.event.inputs.project }}/out/**/*.jpg
-            ${{ github.event.inputs.project }}/out/**/*.mp4
+          path: projects/mv/out/**
           retention-days: 7
