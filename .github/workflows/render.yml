@@ -11,6 +11,9 @@ on:
       project:
         description: "项目目录"
         default: projects/mv
+      range:
+        description: "只渲染这段时间，单位秒，例 0:30"
+        default: "0:30"
 
 permissions:
   contents: read
@@ -28,19 +31,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: diagnose
-        timeout-minutes: 3
-        run: |
-          echo "=== node ==="; node -v; npm -v
-          echo "=== skill dir ==="
-          ls -la skills/painted-animation
-          echo "=== template ==="
-          ls -la skills/painted-animation/template || true
-          echo "=== template package.json ==="
-          cat skills/painted-animation/template/package.json || true
-          echo "=== studio.html scripts ==="
-          grep -n "script src" skills/painted-animation/template/studio.html || true
 
       - name: install chrome
         id: chrome
@@ -62,31 +52,29 @@ jobs:
           cp -r skills/painted-animation/template/. "$P"/
           mkdir -p "$P/assets"
           if [ -d assets ]; then cp -n assets/* "$P/assets/" || true; fi
-          echo "=== project files ==="; ls -la "$P"
+          ls -la "$P"
 
       - name: npm install
         timeout-minutes: 8
         working-directory: ${{ github.event.inputs.project }}
-        run: |
-          npm install --no-audit --no-fund --registry=https://registry.npmjs.org
-          echo "=== node_modules ok ==="; ls -d node_modules || true
+        run: npm install --no-audit --no-fund
 
       - name: render sheet
         if: github.event.inputs.mode == 'sheet'
-        timeout-minutes: 8
+        timeout-minutes: 10
         working-directory: ${{ github.event.inputs.project }}
         run: |
-          echo "chrome = ${{ steps.chrome.outputs.chrome-path }}"
-          node render.mjs --sheet=0.5,2,4,6 --cols=4 --w=480 \
+          node render.mjs --sheet=0.5,2,4,6 --cols=4 --w=480 --soft-gl \
             --out=out/check/a.jpg \
             --chrome=${{ steps.chrome.outputs.chrome-path }}
 
       - name: render video
         if: github.event.inputs.mode == 'video'
-        timeout-minutes: 40
+        timeout-minutes: 50
         working-directory: ${{ github.event.inputs.project }}
         run: |
-          node render.mjs --frames --workers=4 \
+          node render.mjs --frames --workers=4 --soft-gl \
+            --range=${{ github.event.inputs.range }} \
             --chrome=${{ steps.chrome.outputs.chrome-path }}
           node render.mjs --encode --out=out/video.mp4 \
             --audio=assets/song.mp3
@@ -100,9 +88,3 @@ jobs:
             ${{ github.event.inputs.project }}/out/**/*.jpg
             ${{ github.event.inputs.project }}/out/**/*.mp4
           retention-days: 7
-
-      - name: fail summary
-        if: failure()
-        run: |
-          echo "跑挂了。看上面第一个红 ✕ 步骤的日志。"
-          ls -la ${{ github.event.inputs.project }} || true
